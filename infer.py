@@ -114,7 +114,8 @@ def inference_slice(model, frame_ids, res, prompt, output_image_dir, output_vide
     output_video_path = os.path.join(output_video_dir, f"{frame_ids[0]}_{frame_ids[-1]}_{res}.mp4")
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     height, width = read_img(os.path.join(args.video, '{:09d}.png'.format(frame_ids[0]))).shape[1:3]
-    video_writer = cv2.VideoWriter(output_video_path, fourcc, 30.0, (width, height * 2))
+    video_merge_writer = cv2.VideoWriter(output_video_path, fourcc, 30.0, (width, height * 2))
+    video_writer = cv2.VideoWriter(output_video_path, fourcc, 30.0, (width, height))
     for i in tqdm(range(len(frame_ids))):
         fpath = os.path.join(output_image_dir, '{:09d}.png'.format(frame_ids[i]))
         ori_path = os.path.join(args.video, '{:09d}.png'.format(frame_ids[i]))
@@ -131,9 +132,11 @@ def inference_slice(model, frame_ids, res, prompt, output_image_dir, output_vide
 
         # up down concat
         merged_frame = cv2.vconcat([ori_frame, frame])
-        video_writer.write(merged_frame)
+        video_writer.write(frame)
+        video_merge_writer.write(merged_frame)
 
     video_writer.release()
+    video_merge_writer.release()
     print(f"Video saved to {output_video_path}")
 
 
