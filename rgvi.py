@@ -4,22 +4,26 @@ from PIL import Image
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import gc
+import time
+from tqdm import tqdm
 import torchvision as tv
 from diffusers import StableDiffusionInpaintPipeline as SDI
 
 
-def backward_warp(x, flow):
+def backward_warp(x, flow, to_cpu=True):
     B, _, H, W = x.size()
     x = x.cuda()
     flow = flow.cuda()
-    grid_h = torch.arange(0, H).view(1, H, 1).repeat(B, 1, W)
-    grid_w = torch.arange(0, W).view(1, 1, W).repeat(B, H, 1)
+    grid_h = torch.arange(0, H, device=x.device).view(1, H, 1).repeat(B, 1, W)
+    grid_w = torch.arange(0, W, device=x.device).view(1, 1, W).repeat(B, H, 1)
     grid = torch.stack([grid_w, grid_h], 3).type_as(x)
     grid_flow = grid + flow.permute(0, 2, 3, 1)
     grid_flow_w = 2 * grid_flow[:, :, :, 0] / (W - 1) - 1
     grid_flow_h = 2 * grid_flow[:, :, :, 1] / (H - 1) - 1
     norm_grid_flow = torch.stack([grid_flow_w, grid_flow_h], dim=3)
-    return F.grid_sample(x, norm_grid_flow, align_corners=True).cpu()
+    result = F.grid_sample(x, norm_grid_flow, align_corners=True)
+    return result.cpu() if to_cpu else result
 
 
 # RGVI model
@@ -60,6 +64,7 @@ class RGVI(nn.Module):
         org_imgs = imgs.clone()
 
         # optical flow generation (maximum 480p)
+        print('Optical flow generation...', time.time())
         fw_flows = {}
         bw_flows = {}
         for i in range(1, L):
@@ -72,6 +77,7 @@ class RGVI(nn.Module):
         imgs = imgs * cnts
 
         # flow completion (240p)
+        print('Flow completion...', time.time())
         s = H / 240
         fcnet_masks = F.interpolate(masks, size=(240, 432), mode='bicubic', antialias=True)
         fcnet_masks = F.avg_pool2d(fcnet_masks, 9, 1, 4)
@@ -95,22 +101,28 @@ class RGVI(nn.Module):
             inp_bw_flows[i + 1] = fcnet_inp_flows[1][:, i].cpu()
 
         # internal pixel propagation
-        fw_imgs = imgs.clone()
-        bw_imgs = imgs.clone()
-        fw_cnts = cnts.clone()
-        bw_cnts = cnts.clone()
-        warp_masks = torch.zeros(L, 1, H, W)
-        for i in range(L):
+        print('Internal pixel propagation...', time.time())
+        imgs = imgs.cuda()
+        cnts = cnts.cuda()
+        fw_imgs = imgs.clone().cuda()
+        bw_imgs = imgs.clone().cuda()
+        fw_cnts = cnts.clone().cuda()
+        bw_cnts = cnts.clone().cuda()
+        warp_masks = torch.zeros(L, 1, H, W).cuda()
+        inp_fw_flows = {k: v.cuda() for k, v in inp_fw_flows.items()}
+        inp_bw_flows = {k: v.cuda() for k, v in inp_bw_flows.items()}
+        
+        for i in tqdm(range(L)):
 
             # pulling from forward direction
             for j in range(i + 1, L):
                 if j == i + 1:
                     acc_flow = inp_fw_flows[i]
                 else:
-                    acc_flow = backward_warp(inp_fw_flows[j - 1], acc_flow) + acc_flow
+                    acc_flow = backward_warp(inp_fw_flows[j - 1], acc_flow, to_cpu=False) + acc_flow
                 acc_flow_s = F.interpolate(acc_flow, scale_factor=s, mode='bicubic', antialias=True) * s
-                warp_img = backward_warp(imgs[j:j + 1], acc_flow_s)[0]
-                warp_cnt = backward_warp(cnts[j:j + 1], acc_flow_s)[0]
+                warp_img = backward_warp(imgs[j:j + 1], acc_flow_s, to_cpu=False)[0]
+                warp_cnt = backward_warp(cnts[j:j + 1], acc_flow_s, to_cpu=False)[0]
                 fw_imgs[i] = fw_imgs[i] + (1 - fw_cnts[i]) * warp_img
                 fw_cnts[i] = fw_cnts[i] + (1 - fw_cnts[i]) * warp_cnt
                 warp_masks[i] = warp_masks[i] + 1 - warp_cnt
@@ -120,13 +132,24 @@ class RGVI(nn.Module):
                 if j == i - 1:
                     acc_flow = inp_bw_flows[i]
                 else:
-                    acc_flow = backward_warp(inp_bw_flows[j + 1], acc_flow) + acc_flow
+                    acc_flow = backward_warp(inp_bw_flows[j + 1], acc_flow, to_cpu=False) + acc_flow
                 acc_flow_s = F.interpolate(acc_flow, scale_factor=s, mode='bicubic', antialias=True) * s
-                warp_img = backward_warp(imgs[j:j + 1], acc_flow_s)[0]
-                warp_cnt = backward_warp(cnts[j:j + 1], acc_flow_s)[0]
+                warp_img = backward_warp(imgs[j:j + 1], acc_flow_s, to_cpu=False)[0]
+                warp_cnt = backward_warp(cnts[j:j + 1], acc_flow_s, to_cpu=False)[0]
                 bw_imgs[i] = bw_imgs[i] + (1 - bw_cnts[i]) * warp_img
                 bw_cnts[i] = bw_cnts[i] + (1 - bw_cnts[i]) * warp_cnt
                 warp_masks[i] = warp_masks[i] + 1 - warp_cnt
+        warp_masks = warp_masks.cpu()
+        fw_imgs = fw_imgs.cpu()
+        bw_imgs = bw_imgs.cpu()
+        fw_cnts = fw_cnts.cpu()
+        bw_cnts = bw_cnts.cpu()
+        inp_fw_flows = {k: v.cpu() for k, v in inp_fw_flows.items()}
+        inp_bw_flows = {k: v.cpu() for k, v in inp_bw_flows.items()}
+        imgs = imgs.cpu()
+        cnts = cnts.cpu()
+        torch.cuda.empty_cache()
+        gc.collect()
 
         # invalidate incomplete propagation
         fw_imgs[fw_cnts.repeat(1, 3, 1, 1) != 1] = 0
@@ -150,6 +173,7 @@ class RGVI(nn.Module):
             con_num[i] = con_num[i] + torch.sum(masks[i]) + torch.sum(masks[i] * warp_masks[i])
 
         # select target frame to fill
+        print('Target frame selection...', time.time())
         k = int(torch.argmax(con_num, dim=0))
         if 1 in masks[k].unique():
 
@@ -182,7 +206,8 @@ class RGVI(nn.Module):
             cnts[k] = 1
 
             # pulling from forward direction
-            for i in range(k - 1, -1, -1):
+            print('pulling from forward direction...', time.time())
+            for i in tqdm(range(k - 1, -1, -1)):
                 if i == k - 1:
                     acc_flow = inp_fw_flows[i]
                 else:
@@ -194,7 +219,8 @@ class RGVI(nn.Module):
                 cnts[i] = cnts[i] + (1 - cnts[i]) * warp_cnt
 
             # pulling from backward direction
-            for i in range(k + 1, L):
+            print('pulling from backward direction...', time.time())
+            for i in tqdm(range(k + 1, L)):
                 if i == k + 1:
                     acc_flow = inp_bw_flows[i]
                 else:
@@ -214,11 +240,13 @@ class RGVI(nn.Module):
         masks = 1 - cnts * (1 - unsure)
 
         # missing area completion
-        for i in range(L):
+        print('Missing area completion...', time.time())
+        for i in tqdm(range(L)):
             if 1 in masks[i].unique():
                 imgs[i:i + 1] = self.pfcnet(imgs[i:i + 1].cuda(), masks[i:i + 1].cuda()).cpu()
 
         # attach back positive masks
+        print('Attaching back positive masks...', time.time())
         if pos_masks is not None:
             imgs = (1 - pos_masks) * imgs + pos_masks * org_imgs
         return imgs

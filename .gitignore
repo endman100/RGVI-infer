@@ -1,0 +1,6 @@
+/test
+*.pyc
+/outputs
+.vscode/settings.json
+*.mp4
+/weights
