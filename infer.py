@@ -13,8 +13,8 @@ warnings.filterwarnings('ignore')
 
 
 parser = ArgumentParser()
-parser.add_argument('--video', default=r'D:\SAM2-GUI-PySide6\workspace\20250709_140347_output_12 - Trim - Trim\frames', type=str, help='path to video frames')
-parser.add_argument('--mask', default=r'D:\SAM2-GUI-PySide6\workspace\20250709_140347_output_12 - Trim - Trim\result_is_color_False_is_video_False_is_invert_False', type=str, help='path to mask frames')
+parser.add_argument('--video', default=r'D:\SAM2-GUI-PySide6\workspace\20250717_115713_part2\frames', type=str, help='path to video frames')
+parser.add_argument('--mask', default=r'D:\SAM2-GUI-PySide6\workspace\20250717_115713_part2\result_is_color_False_is_video_False_is_invert_False', type=str, help='path to mask frames')
 parser.add_argument('--res', default='2K', choices=['240p', '480p', '2K'], help='input resolution')
 parser.add_argument('--prompt', default=None, type=str, help='text prompt for generative model')
 parser.add_argument('--output', default='./outputs/', type=str, help='path to output frames')
@@ -72,9 +72,9 @@ def inference_slice(model, frame_ids, res, prompt, output_image_dir, output_vide
         for index in range(start, end):
             mask_path = os.path.join(args.mask, '{:09d}.png'.format(frame_ids[index]))
             if index < last_end: # read output as padding
-                img_path = os.path.join(output_image_dir, '{:09d}.png'.format(frame_ids[index]))
+                img_path = os.path.join(output_image_dir, '{:09d}.jpg'.format(frame_ids[index]))
             else:
-                img_path = os.path.join(args.video, '{:09d}.png'.format(frame_ids[index]))
+                img_path = os.path.join(args.video, '{:09d}.jpg'.format(frame_ids[index]))
             assert os.path.exists(img_path), f"Image {img_path} does not exist."
             assert os.path.exists(mask_path), f"Mask {mask_path} does not exist."
 
@@ -114,12 +114,12 @@ def inference_slice(model, frame_ids, res, prompt, output_image_dir, output_vide
     output_video_merge_path = os.path.join(output_video_dir, f"{frame_ids[0]}_{frame_ids[-1]}_{res}_merge.mp4")
     output_video_path = os.path.join(output_video_dir, f"{frame_ids[0]}_{frame_ids[-1]}_{res}.mp4")
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    height, width = read_img(os.path.join(args.video, '{:09d}.png'.format(frame_ids[0]))).shape[1:3]
+    height, width = read_img(os.path.join(args.video, '{:09d}.jpg'.format(frame_ids[0]))).shape[1:3]
     video_merge_writer = cv2.VideoWriter(output_video_merge_path, fourcc, 30.0, (width, height * 2))
     video_writer = cv2.VideoWriter(output_video_path, fourcc, 30.0, (width, height))
     for i in tqdm(range(len(frame_ids))):
         fpath = os.path.join(output_image_dir, '{:09d}.png'.format(frame_ids[i]))
-        ori_path = os.path.join(args.video, '{:09d}.png'.format(frame_ids[i]))
+        ori_path = os.path.join(args.video, '{:09d}.jpg'.format(frame_ids[i]))
         if not os.path.exists(fpath):
             fpath = ori_path
         assert os.path.exists(fpath), f"Original frame {fpath} does not exist."
